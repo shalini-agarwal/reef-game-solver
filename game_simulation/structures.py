@@ -38,6 +38,18 @@ class StoneQuarryStructure(ExtractionStructure, BuildableStructure):
         super().__init__(x, y)
 
 
+class IronMineStructure(ExtractionStructure, BuildableStructure):
+    """IRON_MINE structure for game simulation."""
+
+    build_cost = Inventory({ResourceType.STONE: 15})
+    rate = 5
+    extracted_resource = ResourceType.IRON_ORE
+    type = StructureType.IRON_MINE
+
+    def __init__(self, x: int, y: int):
+        super().__init__(x, y)
+
+
 class BaseStructure(StorageStructure, BaseOnlyStructure):
     """BASE structure for game simulation."""
 
@@ -48,7 +60,9 @@ class BaseStructure(StorageStructure, BaseOnlyStructure):
 
 
 # Union of all structure types for game simulation
-GameStructure: TypeAlias = RoadStructure | StoneQuarryStructure | BaseStructure
+GameStructure: TypeAlias = (
+    RoadStructure | StoneQuarryStructure | IronMineStructure | BaseStructure
+)
 
 
 def create_structure_from_api(api_structure: ApiStructure, structure_type: StructureType) -> GameStructure:
@@ -60,20 +74,28 @@ def create_structure_from_api(api_structure: ApiStructure, structure_type: Struc
 
     if structure_type == StructureType.ROAD:
         return RoadStructure(**base_data)
+
     elif structure_type == StructureType.STONE_QUARRY:
         structure = StoneQuarryStructure(**base_data)
         if api_structure.storage:
-            # Update existing storage with API data, don't overwrite
             for k, v in api_structure.storage.items():
                 structure.storage[ResourceType(k)] = v
         return structure
+
+    elif structure_type == StructureType.IRON_MINE:       # ← new
+        structure = IronMineStructure(**base_data)
+        if api_structure.storage:
+            for k, v in api_structure.storage.items():
+                structure.storage[ResourceType(k)] = v
+        return structure
+
     elif structure_type == StructureType.BASE:
         structure = BaseStructure(**base_data)
         if api_structure.storage:
-            # Update existing storage with API data, don't overwrite
             for k, v in api_structure.storage.items():
                 structure.storage[ResourceType(k)] = v
         return structure
+
     else:
         raise ValueError(f"Unknown structure type: {structure_type}")
 
@@ -83,5 +105,6 @@ def supported_structure_types() -> set[str]:
     return {
         RoadStructure.type.value,
         StoneQuarryStructure.type.value,
+        IronMineStructure.type.value,    # ← new
         BaseStructure.type.value,
     }

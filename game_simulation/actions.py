@@ -60,17 +60,18 @@ class BuildAction(BaseAction):
     def apply(self, game_state: GameState) -> None:
         """Apply this BUILD action to the game state."""
         # Create the concrete structure to get build costs
-        from .structures import BaseStructure, GameStructure, RoadStructure, StoneQuarryStructure
+        from .structures import BaseStructure, GameStructure, IronMineStructure, RoadStructure, StoneQuarryStructure
 
         structure: GameStructure
-
+        
         if self.type == StructureType.ROAD:
             structure = RoadStructure(x=self.x, y=self.y)
         elif self.type == StructureType.STONE_QUARRY:
             structure = StoneQuarryStructure(x=self.x, y=self.y)
+        elif self.type == StructureType.IRON_MINE:          # ← new
+            structure = IronMineStructure(x=self.x, y=self.y)  # ← new
         elif self.type == StructureType.BASE:
             raise ValueError(f"Cannot build type: {self.type}")
-            structure = BaseStructure(x=self.x, y=self.y)
         else:
             raise ValueError(f"Unknown structure type: {self.type}")
 
