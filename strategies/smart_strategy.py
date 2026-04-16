@@ -1,4 +1,4 @@
-"""Smart strategy using 0-1 BFS for optimal routing, mine-first turn order."""
+"""Smart strategy for Stage 2: handles both STONE and IRON_ORE resources."""
 
 from __future__ import annotations
 
@@ -16,48 +16,37 @@ from game_simulation.game_types import ResourceType, StructureType, TerrainType
 from strategies.base_strategy import BaseStrategy, StrategyFailed
 
 
-def find_path_to_nearest_stone(
+def _bfs_to_nearest(
     game_state,
-    already_targeted=None,
-    network_positions=None,
-    quarry_positions=None,
+    target_positions,
+    already_targeted,
+    network_positions,
+    extraction_positions,
 ):
     """
-    Find path from BASE to nearest untargeted stone node using 0-1 BFS.
-    Cost = number of NEW roads needed.
-    Quarry positions cannot be used as intermediates (only roads can).
-    Always reconstructs full path from BASE so transfer paths are always valid.
+    0-1 BFS from BASE to nearest target position.
+    Cost 0 = traverse existing network tile.
+    Cost 1 = build new road on grass/planned_road tile.
+    Extraction positions blocked as intermediates.
+    Always reconstructs full path from BASE.
     """
-    if already_targeted is None:
-        already_targeted = set()
-    if network_positions is None:
-        network_positions = {(game_state.base.x, game_state.base.y)}
-    if quarry_positions is None:
-        quarry_positions = set()
-
     board = game_state.board
     width = board.width
     height = board.height
     grid = board.grid
     base_pos = (game_state.base.x, game_state.base.y)
 
-    stone_positions = {
-        (node.x, node.y)
-        for node in board.resource_nodes
-        if node.resource == "STONE"
-        and (node.x, node.y) not in already_targeted
-    }
-
-    if not stone_positions:
+    reachable_targets = target_positions - already_targeted
+    if not reachable_targets:
         return None, None
 
     def in_bounds(x, y):
         return 0 <= x < width and 0 <= y < height
 
     def is_traversable(x, y):
-        if (x, y) in stone_positions:
+        if (x, y) in reachable_targets:
             return True
-        if (x, y) in quarry_positions:
+        if (x, y) in extraction_positions:
             return False
         if (x, y) in network_positions:
             return True
@@ -66,10 +55,8 @@ def find_path_to_nearest_stone(
 
     dist = {base_pos: 0}
     parent = {base_pos: None}
-    queue = deque()
-    queue.append((0, base_pos))
-
-    best_stone_node = None
+    queue = deque([(0, base_pos)])
+    best = None
 
     while queue:
         d, (x, y) = queue.popleft()
@@ -77,19 +64,15 @@ def find_path_to_nearest_stone(
         if d > dist.get((x, y), float('inf')):
             continue
 
-        if (x, y) in stone_positions:
-            best_stone_node = (x, y)
+        if (x, y) in reachable_targets:
+            best = (x, y)
             break
 
         for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
-            if not in_bounds(nx, ny):
+            if not in_bounds(nx, ny) or not is_traversable(nx, ny):
                 continue
-            if not is_traversable(nx, ny):
-                continue
-
             tile_cost = 0 if (nx, ny) in network_positions else 1
             new_dist = d + tile_cost
-
             if new_dist < dist.get((nx, ny), float('inf')):
                 dist[(nx, ny)] = new_dist
                 parent[(nx, ny)] = (x, y)
@@ -98,111 +81,231 @@ def find_path_to_nearest_stone(
                 else:
                     queue.append((new_dist, (nx, ny)))
 
-    if best_stone_node is None:
+    if best is None:
         return None, None
 
     path = []
-    current = best_stone_node
+    current = best
     while current is not None:
         path.append(current)
         current = parent[current]
     path.reverse()
-
-    return path, best_stone_node
+    return path, best
 
 
 def find_all_paths(game_state):
     """
-    Find paths to all stone nodes using 0-1 BFS, extending network each time.
-    Tracks quarry positions separately so they are never used as intermediates.
+    Find paths to all resource nodes using 0-1 BFS.
+    Stone and iron paths are found INDEPENDENTLY from BASE.
+    This ensures iron mine costs are never underestimated.
+    We still share roads at EXECUTION time (skipping already-built tiles),
+    but costs are calculated conservatively.
     """
-    plans = []
-    already_targeted = set()
-    network_positions = set(game_state.structures.keys())
-    quarry_positions = set()
+    base_network = set(game_state.structures.keys())  # just BASE at start
 
-    while True:
-        path, quarry_pos = find_path_to_nearest_stone(
+    stone_plans = []
+    iron_plans = []
+
+    # --- find stone quarry paths (extending network as we go) ---
+    stone_network = set(base_network)
+    stone_extractions = set()
+    stone_already_targeted = set()
+
+    stone_nodes = {
+        (node.x, node.y)
+        for node in game_state.board.resource_nodes
+        if node.resource == ResourceType.STONE.value
+    }
+
+    while stone_nodes:
+        path, pos = _bfs_to_nearest(
             game_state,
-            already_targeted,
-            network_positions,
-            quarry_positions,
+            target_positions=stone_nodes,
+            already_targeted=stone_already_targeted,
+            network_positions=stone_network,
+            extraction_positions=stone_extractions,
         )
         if path is None:
             break
 
-        new_roads = [pos for pos in path[1:-1] if pos not in network_positions]
-        road_cost = len(new_roads)
-        total_cost = road_cost + 10
+        new_roads = [p for p in path[1:-1] if p not in stone_network]
+        total_cost = len(new_roads) + 10
 
-        plans.append((path, quarry_pos, total_cost, new_roads))
-        already_targeted.add(quarry_pos)
+        stone_plans.append({
+            'path': path,
+            'pos': pos,
+            'cost': total_cost,
+            'new_roads': new_roads,
+            'structure_type': StructureType.STONE_QUARRY,
+            'resource_type': ResourceType.STONE,
+        })
 
-        # roads go into network (traversable as intermediates)
-        for pos in path[1:-1]:
-            network_positions.add(pos)
+        stone_already_targeted.add(pos)
+        for p in path[1:-1]:
+            stone_network.add(p)
+        stone_extractions.add(pos)
+        stone_network.add(pos)
+        stone_nodes.discard(pos)
 
-        # quarry goes into both sets
-        quarry_positions.add(quarry_pos)
-        network_positions.add(quarry_pos)
+    # --- find iron mine paths INDEPENDENTLY from BASE only ---
+    # We do NOT assume any stone quarry roads exist.
+    # This ensures costs are never underestimated.
+    iron_network = set(base_network)   # ← reset to just BASE
+    iron_extractions = set()
+    iron_already_targeted = set()
 
-    return plans
+    iron_nodes = {
+        (node.x, node.y)
+        for node in game_state.board.resource_nodes
+        if node.resource == ResourceType.IRON_ORE.value
+    }
+
+    while iron_nodes:
+        path, pos = _bfs_to_nearest(
+            game_state,
+            target_positions=iron_nodes,
+            already_targeted=iron_already_targeted,
+            network_positions=iron_network,
+            extraction_positions=iron_extractions,
+        )
+        if path is None:
+            break
+
+        new_roads = [p for p in path[1:-1] if p not in iron_network]
+        total_cost = len(new_roads) + 15
+
+        iron_plans.append({
+            'path': path,
+            'pos': pos,
+            'cost': total_cost,
+            'new_roads': new_roads,
+            'structure_type': StructureType.IRON_MINE,
+            'resource_type': ResourceType.IRON_ORE,
+        })
+
+        iron_already_targeted.add(pos)
+        for p in path[1:-1]:
+            iron_network.add(p)
+        iron_extractions.add(pos)
+        iron_network.add(pos)
+        iron_nodes.discard(pos)
+
+    return {'stone': stone_plans, 'iron': iron_plans}
 
 
-def simulate_plan(starting_stone, target, max_turns, quarry_costs):
+def simulate_plan(starting_stone, iron_target, max_turns, stone_costs, mine_costs):
     """
-    Simulate mine-first turn order:
-      1. Mine all existing quarries → transfer to base
-      2. Build as many quarries as affordable (each newly built quarry also mines immediately)
-      3. Check if target reached
-
-    This matches generate_more_turn_actions turn order exactly.
-    Returns list of (turn, quarry_index) build events if reachable, else None.
+    Simulate combined stone + iron production.
+    Turn order (must match generate_more_turn_actions exactly):
+      1. Mine all existing quarries → stone
+      2. Mine all existing mines → iron
+      3. Build as many structures as affordable (quarries first, then mines)
+         each newly built structure also mines immediately
+      4. Check if iron target reached
+    Returns list of (turn, resource_type, plan_index) or None.
     """
     stone = starting_stone
+    iron = 0
     built_quarries = 0
-    next_to_build = 0
+    built_mines = 0
+    next_quarry = 0
+    next_mine = 0
     build_events = []
 
     for turn in range(max_turns):
-        # Step 1: mine all existing quarries
+        # step 1: mine existing structures
         stone += built_quarries * 5
+        iron += built_mines * 5
 
-        # Step 2: build as many quarries as affordable,
-        # each newly built one also mines immediately in this turn
-        while next_to_build < len(quarry_costs):
-            cost = quarry_costs[next_to_build]
-            if stone >= cost:
-                stone -= cost
-                build_events.append((turn, next_to_build))
+        # step 2: build as many as affordable, keep trying until nothing more fits
+        changed = True
+        while changed:
+            changed = False
+            # try next quarry
+            if next_quarry < len(stone_costs) and stone >= stone_costs[next_quarry]:
+                stone -= stone_costs[next_quarry]
+                build_events.append((turn, ResourceType.STONE, next_quarry))
                 built_quarries += 1
-                next_to_build += 1
-                stone += 5  # new quarry mines immediately same turn
-            else:
-                break
+                next_quarry += 1
+                stone += 5  # mines immediately
+                changed = True
+            # try next iron mine
+            if next_mine < len(mine_costs) and stone >= mine_costs[next_mine]:
+                stone -= mine_costs[next_mine]
+                build_events.append((turn, ResourceType.IRON_ORE, next_mine))
+                built_mines += 1
+                next_mine += 1
+                iron += 5   # mines immediately
+                changed = True
 
-        # Step 3: check goal
-        if stone >= target:
+        # step 3: check win condition
+        if iron >= iron_target:
             return build_events
 
     return None
 
 
-def find_optimal_quarry_subset(quarry_plans, starting_stone, target, max_turns):
-    """
-    Try increasing subsets of quarries (in order found by BFS) until we find
-    the minimum number that reaches the target within max_turns.
-    """
-    for n in range(1, len(quarry_plans) + 1):
-        subset = quarry_plans[:n]
-        subset_costs = [cost for (_, _, cost, _) in subset]
-        build_schedule = simulate_plan(starting_stone, target, max_turns, subset_costs)
-        if build_schedule is not None:
-            print(f"Optimal plan: {n} quarries needed")
-            print(f"Build schedule: {build_schedule}")
-            return subset, build_schedule
+def simulate_stone_only(starting_stone, stone_target, max_turns, quarry_costs):
+    """Simulate stone-only production (stage 1 fallback)."""
+    stone = starting_stone
+    built = 0
+    next_q = 0
+    events = []
 
-    return None, None
+    for turn in range(max_turns):
+        stone += built * 5
+        changed = True
+        while changed:
+            changed = False
+            if next_q < len(quarry_costs) and stone >= quarry_costs[next_q]:
+                stone -= quarry_costs[next_q]
+                events.append((turn, ResourceType.STONE, next_q))
+                built += 1
+                next_q += 1
+                stone += 5
+                changed = True
+        if stone >= stone_target:
+            return events
+
+    return None
+
+
+def find_optimal_plan(all_paths, starting_stone, goal_resource, goal_amount, max_turns):
+    """
+    Find minimum quarries + mines needed to reach goal within max_turns.
+    For IRON_ORE goals: tries combinations of stone quarries and iron mines.
+    For STONE goals: tries increasing numbers of stone quarries only.
+    Returns (selected_stone, selected_iron, build_schedule).
+    """
+    stone_plans = all_paths['stone']
+    iron_plans = all_paths['iron']
+
+    if goal_resource == ResourceType.STONE:
+        # stage 1 fallback: stone-only
+        for n in range(1, len(stone_plans) + 1):
+            costs = [p['cost'] for p in stone_plans[:n]]
+            schedule = simulate_stone_only(starting_stone, goal_amount, max_turns, costs)
+            if schedule is not None:
+                print(f"Stone-only plan: {n} quarries")
+                print(f"Build schedule: {schedule}")
+                return stone_plans[:n], [], schedule
+        return None, None, None
+
+    # stage 2+: iron ore goal
+    # try increasing numbers of iron mines, with increasing quarries to fund them
+    for num_iron in range(1, len(iron_plans) + 1):
+        for num_stone in range(0, len(stone_plans) + 1):
+            stone_costs = [p['cost'] for p in stone_plans[:num_stone]]
+            mine_costs = [p['cost'] for p in iron_plans[:num_iron]]
+            schedule = simulate_plan(
+                starting_stone, goal_amount, max_turns, stone_costs, mine_costs
+            )
+            if schedule is not None:
+                print(f"Optimal: {num_stone} quarries + {num_iron} iron mines")
+                print(f"Build schedule: {schedule}")
+                return stone_plans[:num_stone], iron_plans[:num_iron], schedule
+
+    return None, None, None
 
 
 class SmartStrategy(BaseStrategy):
@@ -212,34 +315,41 @@ class SmartStrategy(BaseStrategy):
 
         self._base_pos = (game_state.base.x, game_state.base.y)
 
-        # Step 1: find paths to all stone nodes
-        all_quarry_plans = find_all_paths(game_state)
+        # determine goal resource and amount
+        goal = game_state.goal_resources
+        if goal.get(ResourceType.IRON_ORE, 0) > 0:
+            self._goal_resource = ResourceType.IRON_ORE
+            goal_amount = goal.get(ResourceType.IRON_ORE, 0)
+        else:
+            self._goal_resource = ResourceType.STONE
+            goal_amount = goal.get(ResourceType.STONE, 0)
 
         starting_stone = game_state.base.storage.get(ResourceType.STONE, 0)
-        target = game_state.goal_resources.get(ResourceType.STONE, 0)
         max_turns = game_state.max_turns
 
-        print(f"Found {len(all_quarry_plans)} quarry plans:")
-        for i, (path, qpos, cost, new_roads) in enumerate(all_quarry_plans):
-            print(f"  Quarry {i+1}: pos={qpos}, cost={cost}, new_roads={new_roads}")
-        print(f"Starting stone: {starting_stone}, Target: {target}, Max turns: {max_turns}")
+        # find all paths
+        all_paths = find_all_paths(game_state)
 
-        # Step 2: find minimum quarries needed
-        selected_plans, build_schedule = find_optimal_quarry_subset(
-            all_quarry_plans, starting_stone, target, max_turns
+        print(f"Stone plans: {len(all_paths['stone'])}, Iron plans: {len(all_paths['iron'])}")
+        for p in all_paths['stone']:
+            print(f"  Stone quarry at {p['pos']}, cost={p['cost']}, new_roads={p['new_roads']}")
+        for p in all_paths['iron']:
+            print(f"  Iron mine at {p['pos']}, cost={p['cost']}, new_roads={p['new_roads']}")
+        print(f"Starting stone: {starting_stone}, Goal: {goal_amount} {self._goal_resource.value}, Max turns: {max_turns}")
+
+        # find optimal plan
+        selected_stone, selected_iron, build_schedule = find_optimal_plan(
+            all_paths, starting_stone, self._goal_resource, goal_amount, max_turns
         )
 
-        if selected_plans is None:
-            raise StrategyFailed(
-                "Cannot reach target within turn limit with any number of quarries."
-            )
+        if build_schedule is None:
+            raise StrategyFailed("Cannot reach target within turn limit.")
 
-        # Step 3: store plan for execution
-        self._selected_plans = selected_plans
+        self._selected_stone = selected_stone
+        self._selected_iron = selected_iron
         self._build_schedule = build_schedule
-        self._built_quarries = []
-        self._transfer_paths = {}
-        self._next_to_build = 0       # index into selected_plans
+        self._built_extractors = []    # list of (pos, resource_type)
+        self._transfer_paths = {}      # pos -> full transfer path to BASE
         self._last_turn_acted = -1
 
     def generate_more_turn_actions(self) -> Generator[BaseAction, None, None]:
@@ -249,57 +359,63 @@ class SmartStrategy(BaseStrategy):
             return
         self._last_turn_acted = current_turn
 
-        # Step 1: mine ALL existing quarries first
-        for qpos in self._built_quarries:
+        # step 1: mine all existing extractors
+        for (qpos, _) in self._built_extractors:
             yield ExtractAction(x=qpos[0], y=qpos[1])
 
-        # Step 2: transfer ALL existing quarries to BASE
-        for qpos in self._built_quarries:
-            quarry = self.game_state.get_structure_at(*qpos)
-            amount = quarry.storage.get(ResourceType.STONE, 0)
+        # step 2: transfer all to BASE
+        for (qpos, resource_type) in self._built_extractors:
+            extractor = self.game_state.get_structure_at(*qpos)
+            amount = extractor.storage.get(resource_type, 0)
             if amount > 0:
                 yield TransferAction(
                     path=self._transfer_paths[qpos],
-                    resource=ResourceType.STONE,
+                    resource=resource_type,
                     amount=amount,
                 )
 
-        # Step 3: build as many new quarries as we can now afford
-        # (using stone just transferred from existing quarries)
-        while self._next_to_build < len(self._selected_plans):
-            current_stone = self.game_state.base.storage.get(ResourceType.STONE, 0)
-            path, quarry_pos, cost, new_roads = self._selected_plans[self._next_to_build]
+        # step 3: build scheduled structures for this turn
+        for (build_turn, resource_type, plan_idx) in self._build_schedule:
+            if build_turn != current_turn:
+                continue
 
-            if current_stone < cost:
-                break  # can't afford next quarry this turn
-
-            # build new roads
-            for (rx, ry) in new_roads:
-                yield BuildAction(x=rx, y=ry, structure_type=StructureType.ROAD)
-
-            # build quarry
-            yield BuildAction(
-                x=quarry_pos[0],
-                y=quarry_pos[1],
-                structure_type=StructureType.STONE_QUARRY
+            plan = (
+                self._selected_stone[plan_idx]
+                if resource_type == ResourceType.STONE
+                else self._selected_iron[plan_idx]
             )
 
-            # store transfer path and register quarry
-            self._transfer_paths[quarry_pos] = list(reversed(path))
-            self._built_quarries.append(quarry_pos)
-            self._next_to_build += 1
+            # KEY FIX: build ALL tiles in full path order, skipping already-built tiles
+            # This ensures adjacency is always satisfied regardless of network routing
+            for pos in plan['path'][1:-1]:
+                if self.game_state.get_structure_at(*pos) is None:
+                    yield BuildAction(
+                        x=pos[0], y=pos[1],
+                        structure_type=StructureType.ROAD
+                    )
 
-            # Step 4: immediately mine and transfer the new quarry in this same turn
-            yield ExtractAction(x=quarry_pos[0], y=quarry_pos[1])
-            quarry = self.game_state.get_structure_at(*quarry_pos)
-            amount = quarry.storage.get(ResourceType.STONE, 0)
+            # build the extraction structure
+            yield BuildAction(
+                x=plan['pos'][0],
+                y=plan['pos'][1],
+                structure_type=plan['structure_type'],
+            )
+
+            # store transfer path and register extractor
+            self._transfer_paths[plan['pos']] = list(reversed(plan['path']))
+            self._built_extractors.append((plan['pos'], plan['resource_type']))
+
+            # mine and transfer new extractor immediately in same turn
+            yield ExtractAction(x=plan['pos'][0], y=plan['pos'][1])
+            extractor = self.game_state.get_structure_at(*plan['pos'])
+            amount = extractor.storage.get(plan['resource_type'], 0)
             if amount > 0:
                 yield TransferAction(
-                    path=self._transfer_paths[quarry_pos],
-                    resource=ResourceType.STONE,
+                    path=self._transfer_paths[plan['pos']],
+                    resource=plan['resource_type'],
                     amount=amount,
                 )
 
-        # Step 5: claim win if goal reached
+        # step 4: claim win if goal reached
         if self.game_state.base.storage.at_least(self.game_state.goal_resources):
             yield ClaimWinAction(x=self._base_pos[0], y=self._base_pos[1])
