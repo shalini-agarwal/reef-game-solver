@@ -60,7 +60,7 @@ class BuildAction(BaseAction):
     def apply(self, game_state: GameState) -> None:
         """Apply this BUILD action to the game state."""
         # Create the concrete structure to get build costs
-        from .structures import BaseStructure, GameStructure, IronMineStructure, RoadStructure, StoneQuarryStructure
+        from .structures import BaseStructure, GameStructure, IronMineStructure, RoadStructure,SmelterStructure, StoneQuarryStructure
 
         structure: GameStructure
         
@@ -68,8 +68,10 @@ class BuildAction(BaseAction):
             structure = RoadStructure(x=self.x, y=self.y)
         elif self.type == StructureType.STONE_QUARRY:
             structure = StoneQuarryStructure(x=self.x, y=self.y)
-        elif self.type == StructureType.IRON_MINE:          # ← new
-            structure = IronMineStructure(x=self.x, y=self.y)  # ← new
+        elif self.type == StructureType.IRON_MINE:          
+            structure = IronMineStructure(x=self.x, y=self.y) 
+        elif self.type == StructureType.SMELTER:          # ← new
+            structure = SmelterStructure(x=self.x, y=self.y)  # ← new
         elif self.type == StructureType.BASE:
             raise ValueError(f"Cannot build type: {self.type}")
         else:
@@ -147,6 +149,62 @@ class ExtractAction(BaseAction):
         structure.extracted_this_turn = True
 
 
+class ProduceAction(BaseAction):
+    """PRODUCE action: Run production cycles at a production structure."""
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    @property
+    def action_type(self) -> str:
+        return "PRODUCE"
+
+    def to_api_action(self) -> Action:
+        from api_client.models import Action
+        return Action(action="PRODUCE", args={"x": self.x, "y": self.y})
+
+    def __str__(self) -> str:
+        return f"PRODUCE at ({self.x},{self.y})"
+
+    def apply(self, game_state: GameState) -> None:
+        from .structure_mixins import ProductionStructure
+
+        structure = game_state.get_structure_at(self.x, self.y)
+        assert isinstance(structure, ProductionStructure), (
+            f"Cannot produce on non-production structure: {structure}"
+        )
+        assert structure.can_produce, (
+            f"Structure already produced this turn: {structure}"
+        )
+
+        # run up to `rate` cycles
+        cycles = 0
+        while cycles < structure.rate:
+            # check if we have enough inputs for one cycle
+            can_run = all(
+                structure.storage.get(resource, 0) >= amount
+                for resource, amount in structure.recipe_inputs.items()
+            )
+            if not can_run:
+                break
+
+            # consume inputs
+            for resource, amount in structure.recipe_inputs.items():
+                structure.storage.remove(resource, amount)
+
+            # produce outputs
+            for resource, amount in structure.recipe_outputs.items():
+                structure.storage.add(resource, amount)
+
+            cycles += 1
+
+        assert cycles > 0, (
+            f"Not enough inputs to produce at {structure}"
+        )
+        structure.produced_this_turn = True
+
+
 class TransferAction(BaseAction):
     """TRANSFER action: Move resources along a path.
 
@@ -210,6 +268,7 @@ ACTION_TYPE_MAP: dict[str, type[BaseAction]] = {
     "BUILD": BuildAction,
     "CLAIM_WIN": ClaimWinAction,
     "MINE": ExtractAction,
+    "PRODUCE": ProduceAction,
     "TRANSFER": TransferAction,
 }
 

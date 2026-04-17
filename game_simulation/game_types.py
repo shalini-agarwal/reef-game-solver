@@ -6,14 +6,16 @@ from typing import NamedTuple, Protocol
 
 class ResourceType(str, Enum):
     STONE = "STONE"
-    IRON_ORE = "IRON_ORE"      # ← new
+    IRON_ORE = "IRON_ORE"
+    IRON = "IRON"          # ← new
 
 
 class StructureType(str, Enum):
     ROAD = "ROAD"
     STONE_QUARRY = "STONE_QUARRY"
     BASE = "BASE"
-    IRON_MINE = "IRON_MINE"    # ← new
+    IRON_MINE = "IRON_MINE"
+    SMELTER = "SMELTER"    # ← new
 
 
 class TerrainType(str, Enum):
@@ -27,6 +29,7 @@ class StructureInterface(str, Enum):
     Storage = "Storage"
     Extraction = "Extraction"
     BaseOnly = "BaseOnly"
+    Production = "Production"  # ← new
 
 
 class HasPosition(Protocol):

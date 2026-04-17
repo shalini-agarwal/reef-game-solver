@@ -11,6 +11,7 @@ from .structure_mixins import (
     BaseOnlyStructure,
     BuildableStructure,
     ExtractionStructure,
+    ProductionStructure,
     StorageStructure,
     TransportStructure,
 )
@@ -50,6 +51,17 @@ class IronMineStructure(ExtractionStructure, BuildableStructure):
         super().__init__(x, y)
 
 
+class SmelterStructure(ProductionStructure, BuildableStructure):
+    build_cost = Inventory({ResourceType.STONE: 20})
+    rate = 2
+    recipe_inputs = {ResourceType.IRON_ORE: 1}
+    recipe_outputs = {ResourceType.IRON: 1}
+    type = StructureType.SMELTER
+
+    def __init__(self, x: int, y: int):
+        super().__init__(x, y)
+
+
 class BaseStructure(StorageStructure, BaseOnlyStructure):
     """BASE structure for game simulation."""
 
@@ -61,7 +73,11 @@ class BaseStructure(StorageStructure, BaseOnlyStructure):
 
 # Union of all structure types for game simulation
 GameStructure: TypeAlias = (
-    RoadStructure | StoneQuarryStructure | IronMineStructure | BaseStructure
+    RoadStructure
+    | StoneQuarryStructure
+    | IronMineStructure
+    | SmelterStructure
+    | BaseStructure
 )
 
 
@@ -82,8 +98,15 @@ def create_structure_from_api(api_structure: ApiStructure, structure_type: Struc
                 structure.storage[ResourceType(k)] = v
         return structure
 
-    elif structure_type == StructureType.IRON_MINE:       # ← new
+    elif structure_type == StructureType.IRON_MINE:
         structure = IronMineStructure(**base_data)
+        if api_structure.storage:
+            for k, v in api_structure.storage.items():
+                structure.storage[ResourceType(k)] = v
+        return structure
+
+    elif structure_type == StructureType.SMELTER:       # ← new
+        structure = SmelterStructure(**base_data)
         if api_structure.storage:
             for k, v in api_structure.storage.items():
                 structure.storage[ResourceType(k)] = v
@@ -105,6 +128,7 @@ def supported_structure_types() -> set[str]:
     return {
         RoadStructure.type.value,
         StoneQuarryStructure.type.value,
-        IronMineStructure.type.value,    # ← new
+        IronMineStructure.type.value,
+        SmelterStructure.type.value,    # ← new
         BaseStructure.type.value,
     }

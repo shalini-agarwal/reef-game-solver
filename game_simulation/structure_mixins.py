@@ -82,3 +82,22 @@ class BaseOnlyStructure(Structure):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+
+class ProductionStructure(StorageStructure):
+    """
+    Mixin for structures that convert one resource to another.
+    Holds a recipe (inputs → outputs) and a rate (max cycles per turn).
+    """
+
+    rate: int
+    recipe_inputs: dict[ResourceType, int]   # e.g. {IRON_ORE: 1}
+    recipe_outputs: dict[ResourceType, int]  # e.g. {IRON: 1}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.produced_this_turn: bool = False
+
+    @property
+    def can_produce(self):
+        return not self.produced_this_turn

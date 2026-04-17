@@ -14,7 +14,7 @@ from api_client.models import LevelDefinition
 
 from .game_types import ResourceType, StructureType
 from .inventory import Inventory
-from .structure_mixins import ExtractionStructure, StorageStructure
+from .structure_mixins import ExtractionStructure, StorageStructure, ProductionStructure
 from .structures import (
     BaseStructure,
     GameStructure,
@@ -106,3 +106,5 @@ class GameState:
         """
         for extractable in self.get_structures(ExtractionStructure):
             extractable.extracted_this_turn = False
+        for producer in self.get_structures(ProductionStructure):  # ← new
+            producer.produced_this_turn = False
